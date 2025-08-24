@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
-import { Shield, User, Lock, Hash } from 'lucide-react';
+import { Shield, User, Lock, Hash, Settings } from 'lucide-react';
 import { User as UserType } from '../App';
+import { studentMonitoringService } from '../services/StudentMonitoringService';
 
 interface LoginPageProps {
   onLogin: (user: UserType) => void;
+  onSwitchToAdmin: () => void;
 }
 
-const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
+const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onSwitchToAdmin }) => {
   const [formData, setFormData] = useState({
     enrollmentNo: '',
     name: '',
@@ -23,7 +25,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
     setErrors('');
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     if (!formData.enrollmentNo.trim() || !formData.name.trim() || !formData.password.trim()) {
@@ -41,10 +43,26 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
       return;
     }
 
-    onLogin({
-      enrollmentNo: formData.enrollmentNo,
-      name: formData.name
-    });
+    try {
+      // Add student to monitoring service
+      const studentId = studentMonitoringService.addStudent(
+        formData.enrollmentNo,
+        formData.name,
+        formData.password
+      );
+
+      // Create user object with student ID
+      const user: UserType = {
+        enrollmentNo: formData.enrollmentNo,
+        name: formData.name,
+        studentId: studentId // Add studentId to track in monitoring
+      };
+
+      onLogin(user);
+    } catch (error) {
+      setErrors('Error during login. Please try again.');
+      console.error('Login error:', error);
+    }
   };
 
   return (
@@ -135,6 +153,17 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
             >
               Sign In
             </button>
+
+            <div className="text-center">
+              <button
+                type="button"
+                onClick={onSwitchToAdmin}
+                className="text-sm text-gray-600 hover:text-gray-800 flex items-center justify-center space-x-2 mx-auto"
+              >
+                <Settings className="h-4 w-4" />
+                <span>Access Admin Panel</span>
+              </button>
+            </div>
           </div>
         </form>
       </div>
