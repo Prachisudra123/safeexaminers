@@ -26,11 +26,41 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
   const [showNotifications, setShowNotifications] = useState(true);
   const [lastStudentAppeared, setLastStudentAppeared] = useState<StudentStatus | null>(null);
   const [selectedStudentActivities, setSelectedStudentActivities] = useState<StudentActivity[]>([]);
+  const [liveStreams, setLiveStreams] = useState<{ [studentId: string]: MediaStream }>({});
+  const [isViewingLive, setIsViewingLive] = useState<{ [studentId: string]: boolean }>({});
+  const [snapshots, setSnapshots] = useState<{ 
+    id: string; 
+    studentId: string; 
+    timestamp: Date; 
+    imageUrl: string; 
+    studentName: string; 
+    enrollmentNo: string;
+  }[]>([]);
+  const [examHistory, setExamHistory] = useState<{ 
+    studentId: string; 
+    examDate: Date; 
+    score: number; 
+    duration: number; 
+    questionsAnswered: number; 
+    totalQuestions: number;
+    studentName: string;
+    enrollmentNo: string;
+  }[]>([]);
+  const [activeExams, setActiveExams] = useState<{ 
+    studentId: string; 
+    startTime: Date; 
+    currentQuestion: number; 
+    timeRemaining: number;
+    studentName: string;
+    enrollmentNo: string;
+  }[]>([]);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingStartTime = useRef<number>(0);
   const studentAudioRef = useRef<HTMLAudioElement | null>(null);
   const studentStreamRef = useRef<MediaStream | null>(null);
+  const videoRefs = useRef<{ [studentId: string]: HTMLVideoElement | null }>({});
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Subscribe to monitoring service updates
   useEffect(() => {
@@ -479,10 +509,186 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
     }
   };
 
+  // Live streaming functions
+  const startLiveView = async (studentId: string) => {
+    try {
+      // Request access to student's camera and microphone
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { width: 1280, height: 720 }, 
+        audio: true 
+      });
+      
+      setLiveStreams(prev => ({ ...prev, [studentId]: stream }));
+      setIsViewingLive(prev => ({ ...prev, [studentId]: true }));
+      
+      // Record activity
+      studentMonitoringService.recordActivity(
+        studentId,
+        'camera_on',
+        `Admin started live viewing ${students.find(s => s.id === studentId)?.name || 'student'}`,
+        'medium'
+      );
+      
+    } catch (error) {
+      console.error('Error starting live view:', error);
+      alert('Unable to start live view. Please ensure camera and microphone permissions are granted.');
+    }
+  };
+
+  const stopLiveView = (studentId: string) => {
+    const stream = liveStreams[studentId];
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      setLiveStreams(prev => {
+        const newStreams = { ...prev };
+        delete newStreams[studentId];
+        return newStreams;
+      });
+      setIsViewingLive(prev => ({ ...prev, [studentId]: false }));
+      
+      // Record activity
+      studentMonitoringService.recordActivity(
+        studentId,
+        'camera_off',
+        `Admin stopped live viewing ${students.find(s => s.id === studentId)?.name || 'student'}`,
+        'medium'
+      );
+    }
+  };
+
+  const takeSnapshot = (studentId: string) => {
+    const video = videoRefs.current[studentId];
+    const canvas = canvasRef.current;
+    
+    if (video && canvas) {
+      const context = canvas.getContext('2d');
+      if (context) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        context.drawImage(video, 0, 0);
+        
+        const imageUrl = canvas.toDataURL('image/png');
+        const snapshotId = `snapshot_${Date.now()}`;
+        const student = students.find(s => s.id === studentId);
+        
+        const newSnapshot = {
+          id: snapshotId,
+          studentId,
+          timestamp: new Date(),
+          imageUrl,
+          studentName: student?.name || 'Unknown Student',
+          enrollmentNo: student?.enrollmentNo || 'N/A'
+        };
+        
+        setSnapshots(prev => [...prev, newSnapshot]);
+        
+        // Save to localStorage
+        const storedSnapshots = JSON.parse(localStorage.getItem('examSnapshots') || '[]');
+        storedSnapshots.push({
+          ...newSnapshot,
+          timestamp: newSnapshot.timestamp.toISOString()
+        });
+        localStorage.setItem('examSnapshots', JSON.stringify(storedSnapshots));
+        
+        // Record activity
+        studentMonitoringService.recordActivity(
+          studentId,
+          'camera_on',
+          `Admin took snapshot of ${student?.name || 'student'}`,
+          'low'
+        );
+        
+        alert('Snapshot captured successfully!');
+      }
+    }
+  };
+
+  const downloadSnapshot = (snapshotId: string) => {
+    const snapshot = snapshots.find(s => s.id === snapshotId);
+    if (snapshot) {
+      const link = document.createElement('a');
+      link.href = snapshot.imageUrl;
+      link.download = `snapshot_${snapshot.studentName}_${snapshot.timestamp.toLocaleDateString().replace(/\//g, '-')}_${snapshot.timestamp.toLocaleTimeString().replace(/:/g, '-')}.png`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+  };
+
+  const deleteSnapshot = (snapshotId: string) => {
+    if (window.confirm('Are you sure you want to delete this snapshot?')) {
+      setSnapshots(prev => prev.filter(s => s.id !== snapshotId));
+      
+      // Remove from localStorage
+      const storedSnapshots = JSON.parse(localStorage.getItem('examSnapshots') || '[]');
+      const updatedSnapshots = storedSnapshots.filter((s: any) => s.id !== snapshotId);
+      localStorage.setItem('examSnapshots', JSON.stringify(updatedSnapshots));
+    }
+  };
+
+  // Enhanced exam tracking functions
+  const updateExamHistory = () => {
+    const history = students
+      .filter(s => s.examHistory.length > 0)
+      .flatMap(s => s.examHistory.map(exam => ({
+        studentId: s.id,
+        examDate: exam.examDate,
+        score: exam.score || 0,
+        duration: exam.examDuration,
+        questionsAnswered: exam.questionsAnswered,
+        totalQuestions: exam.totalQuestions,
+        studentName: s.name,
+        enrollmentNo: s.enrollmentNo
+      })))
+      .sort((a, b) => b.examDate.getTime() - a.examDate.getTime());
+    
+    setExamHistory(history);
+  };
+
+  const updateActiveExams = () => {
+    const active = students
+      .filter(s => s.isInExam && s.examStartTime)
+      .map(s => ({
+        studentId: s.id,
+        startTime: s.examStartTime!,
+        currentQuestion: 1, // Default to 1 since it's not in StudentStatus
+        timeRemaining: 0, // Default to 0 since it's not in StudentStatus
+        studentName: s.name,
+        enrollmentNo: s.enrollmentNo
+      }));
+    
+    setActiveExams(active);
+  };
+
+  // Load snapshots from localStorage
+  useEffect(() => {
+    try {
+      const storedSnapshots = JSON.parse(localStorage.getItem('examSnapshots') || '[]');
+      if (storedSnapshots.length > 0) {
+        const formattedSnapshots = storedSnapshots.map((snapshot: any) => ({
+          ...snapshot,
+          timestamp: new Date(snapshot.timestamp)
+        }));
+        setSnapshots(formattedSnapshots);
+      }
+    } catch (error) {
+      console.error('Error loading snapshots from localStorage:', error);
+    }
+  }, []);
+
+  // Update exam data when students change
+  useEffect(() => {
+    updateExamHistory();
+    updateActiveExams();
+  }, [students]);
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Hidden audio element for student audio */}
       <audio ref={studentAudioRef} autoPlay muted={false} />
+      
+      {/* Hidden canvas for snapshots */}
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
       
       {/* Header */}
       <div className="bg-white shadow-sm border-b">
@@ -1267,217 +1473,6 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
           </div>
         </div>
 
-        {/* Comprehensive Exam Monitoring Dashboard */}
-        <div className="mt-8">
-          <div className="bg-white rounded-lg shadow-sm border p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-              <Activity className="h-5 w-5 mr-2 text-indigo-600" />
-              Real-Time Exam Monitoring Dashboard
-            </h2>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {/* Live Exam Sessions */}
-              <div className="bg-gradient-to-br from-purple-50 to-blue-50 p-4 rounded-lg border border-purple-200">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-medium text-purple-800">Live Exam Sessions</h3>
-                  <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                </div>
-                <div className="text-2xl font-bold text-purple-900">{studentsInExam}</div>
-                <p className="text-xs text-purple-600 mt-1">Active sessions</p>
-                {studentsInExam > 0 && (
-                  <div className="mt-2 text-xs text-purple-700">
-                    {studentsInExam === 1 ? '1 student taking exam' : `${studentsInExam} students taking exams`}
-                  </div>
-                )}
-              </div>
-
-              {/* Connection Quality Overview */}
-              <div className="bg-gradient-to-br from-green-50 to-emerald-50 p-4 rounded-lg border border-green-200">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-medium text-green-800">Connection Quality</h3>
-                  <Wifi className="h-4 w-4 text-green-600" />
-                </div>
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-green-700">Excellent:</span>
-                    <span className="font-medium">{students.filter(s => s.connectionQuality === 'excellent').length}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-green-700">Good:</span>
-                    <span className="font-medium">{students.filter(s => s.connectionQuality === 'good').length}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-green-700">Poor:</span>
-                    <span className="font-medium">{students.filter(s => s.connectionQuality === 'poor').length}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Security Alerts */}
-              <div className="bg-gradient-to-br from-red-50 to-pink-50 p-4 rounded-lg border border-red-200">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-medium text-red-800">Security Alerts</h3>
-                  <AlertTriangle className="h-4 w-4 text-red-600" />
-                </div>
-                <div className="text-2xl font-bold text-red-900">{studentsWithWarnings}</div>
-                <p className="text-xs text-red-600 mt-1">Students with warnings</p>
-                {studentsWithWarnings > 0 && (
-                  <div className="mt-2 text-xs text-red-700">
-                    {studentsWithWarnings === 1 ? '1 student flagged' : `${studentsWithWarnings} students flagged`}
-                  </div>
-                )}
-              </div>
-
-              {/* Camera & Mic Status */}
-              <div className="bg-gradient-to-br from-blue-50 to-cyan-50 p-4 rounded-lg border border-blue-200">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-medium text-blue-800">Camera & Mic Status</h3>
-                  <Camera className="h-4 w-4 text-blue-600" />
-                </div>
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-blue-700">Camera Active:</span>
-                    <span className="font-medium">{students.filter(s => s.isCameraOn).length}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-blue-700">Mic Active:</span>
-                    <span className="font-medium">{students.filter(s => s.isMicOn).length}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-blue-700">Both Active:</span>
-                    <span className="font-medium">{students.filter(s => s.isCameraOn && s.isMicOn).length}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Exam Progress Tracking */}
-              <div className="bg-gradient-to-br from-yellow-50 to-orange-50 p-4 rounded-lg border border-yellow-200">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-medium text-yellow-800">Exam Progress</h3>
-                  <TrendingUp className="h-4 w-4 text-yellow-600" />
-                </div>
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-yellow-700">Started Today:</span>
-                    <span className="font-medium">
-                      {students.filter(s => s.examStartTime && 
-                        s.examStartTime.toDateString() === new Date().toDateString()).length}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-yellow-700">Completed Today:</span>
-                    <span className="font-medium">
-                      {students.filter(s => s.examHistory.some(exam => 
-                        exam.examDate.toDateString() === new Date().toDateString())).length}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-yellow-700">Avg Duration:</span>
-                    <span className="font-medium">
-                      {(() => {
-                        const examDurations = students
-                          .filter(s => s.examStartTime && s.isInExam)
-                          .map(s => Math.floor((Date.now() - s.examStartTime!.getTime()) / (1000 * 60)));
-                        return examDurations.length > 0 
-                          ? `${Math.round(examDurations.reduce((a, b) => a + b, 0) / examDurations.length)}m`
-                          : '0m';
-                      })()}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* System Health */}
-              <div className="bg-gradient-to-br from-emerald-50 to-teal-50 p-4 rounded-lg border border-emerald-200">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-medium text-emerald-800">System Health</h3>
-                  <div className="w-3 h-3 bg-green-500 rounded-full"></div>
-                </div>
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-emerald-700">Online Students:</span>
-                    <span className="font-medium text-green-600">{studentsOnline}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-emerald-700">Total Students:</span>
-                    <span className="font-medium">{totalStudents}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-emerald-700">Uptime:</span>
-                    <span className="font-medium text-green-600">99.9%</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Quick Actions */}
-            <div className="mt-6 pt-6 border-t border-gray-200">
-              <h3 className="text-sm font-medium text-gray-700 mb-3">Quick Actions</h3>
-              <div className="flex flex-wrap gap-3">
-                <button
-                  onClick={refreshMonitoringData}
-                  className="px-3 py-2 bg-blue-100 text-blue-700 rounded-lg text-sm hover:bg-blue-200 transition duration-200 flex items-center space-x-2"
-                >
-                  <Activity className="h-4 w-4" />
-                  <span>Refresh Data</span>
-                </button>
-                <button
-                  onClick={disconnectAllStudents}
-                  className="px-3 py-2 bg-yellow-100 text-yellow-700 rounded-lg text-sm hover:bg-yellow-200 transition duration-200 flex items-center space-x-2"
-                >
-                  <WifiOff className="h-4 w-4" />
-                  <span>Disconnect All</span>
-                </button>
-                <button
-                  onClick={reconnectAllStudents}
-                  className="px-3 py-2 bg-green-100 text-green-700 rounded-lg text-sm hover:bg-green-200 transition duration-200 flex items-center space-x-2"
-                >
-                  <Wifi className="h-4 w-4" />
-                  <span>Reconnect All</span>
-                </button>
-                <button
-                  onClick={() => {
-                    // Export monitoring report
-                    const report = {
-                      timestamp: new Date().toISOString(),
-                      summary: {
-                        totalStudents: students.length,
-                        studentsOnline: studentsOnline,
-                        studentsInExam: studentsInExam,
-                        studentsWithWarnings: studentsWithWarnings,
-                        totalRecordings: recordings.length
-                      },
-                      students: students.map(s => ({
-                        name: s.name,
-                        enrollmentNo: s.enrollmentNo,
-                        status: s.isOnline ? 'Online' : 'Offline',
-                        examStatus: s.isInExam ? 'In Exam' : 'Not in Exam',
-                        warnings: s.warnings,
-                        connectionQuality: s.connectionQuality
-                      }))
-                    };
-                    
-                    const dataStr = JSON.stringify(report, null, 2);
-                    const dataBlob = new Blob([dataStr], { type: 'application/json' });
-                    const url = URL.createObjectURL(dataBlob);
-                    const link = document.createElement('a');
-                    link.href = url;
-                    link.download = `exam_monitoring_report_${new Date().toISOString().split('T')[0]}.json`;
-                    document.body.appendChild(link);
-                    link.click();
-                    document.body.removeChild(link);
-                    URL.revokeObjectURL(url);
-                  }}
-                  className="px-3 py-2 bg-indigo-100 text-indigo-700 rounded-lg text-sm hover:bg-indigo-200 transition duration-200 flex items-center space-x-2"
-                >
-                  <Download className="h-4 w-4" />
-                  <span>Export Report</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
         {/* Enhanced Recordings Section */}
         <div className="mt-8">
           <div className="bg-white rounded-lg shadow-sm border p-6">
@@ -1662,6 +1657,291 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
                     );
                   })}
                 </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Enhanced Exam History & Analytics */}
+        <div className="mt-8">
+          <div className="bg-white rounded-lg shadow-sm border p-6">
+            <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+              <BookOpen className="h-5 w-5 mr-2 text-indigo-600" />
+              Exam History & Analytics
+            </h2>
+            
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Recent Exam History */}
+              <div>
+                <h3 className="text-md font-medium text-gray-700 mb-3">Recent Exam Completions</h3>
+                {examHistory.length === 0 ? (
+                  <div className="text-center py-8 bg-gray-50 rounded-lg">
+                    <Trophy className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+                    <p className="text-gray-500 text-sm">No exam history available</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3 max-h-64 overflow-y-auto">
+                    {examHistory.slice(0, 10).map((exam, index) => (
+                      <div key={index} className="bg-gray-50 rounded-lg p-3 border">
+                        <div className="flex items-center justify-between mb-2">
+                          <div>
+                            <h4 className="font-medium text-gray-900">{exam.studentName}</h4>
+                            <p className="text-sm text-gray-500">{exam.enrollmentNo}</p>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-lg font-bold text-green-600">{exam.score}%</div>
+                            <div className="text-xs text-gray-500">Score</div>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 text-xs">
+                          <div>
+                            <span className="text-gray-600">Date:</span>
+                            <div className="font-medium">{exam.examDate.toLocaleDateString()}</div>
+                          </div>
+                          <div>
+                            <span className="text-gray-600">Duration:</span>
+                            <div className="font-medium">{formatTime(exam.duration)}</div>
+                          </div>
+                          <div>
+                            <span className="text-gray-600">Questions:</span>
+                            <div className="font-medium">{exam.questionsAnswered}/{exam.totalQuestions}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Active Exam Sessions */}
+              <div>
+                <h3 className="text-md font-medium text-gray-700 mb-3">Currently Active Exams</h3>
+                {activeExams.length === 0 ? (
+                  <div className="text-center py-8 bg-gray-50 rounded-lg">
+                    <Clock className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+                    <p className="text-gray-500 text-sm">No active exam sessions</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3 max-h-64 overflow-y-auto">
+                    {activeExams.map((exam, index) => {
+                      const examDuration = Math.floor((Date.now() - exam.startTime.getTime()) / (1000 * 60));
+                      return (
+                        <div key={index} className="bg-purple-50 rounded-lg p-3 border border-purple-200">
+                          <div className="flex items-center justify-between mb-2">
+                            <div>
+                              <h4 className="font-medium text-gray-900">{exam.studentName}</h4>
+                              <p className="text-sm text-gray-500">{exam.enrollmentNo}</p>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-lg font-bold text-purple-600">{examDuration}m</div>
+                              <div className="text-xs text-gray-500">Duration</div>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-xs">
+                            <div>
+                              <span className="text-gray-600">Started:</span>
+                              <div className="font-medium">{exam.startTime.toLocaleTimeString()}</div>
+                            </div>
+                            <div>
+                              <span className="text-gray-600">Question:</span>
+                              <div className="font-medium">{exam.currentQuestion}</div>
+                            </div>
+                          </div>
+                          <div className="mt-2 pt-2 border-t border-purple-200">
+                            <button
+                              onClick={() => {
+                                const student = students.find(s => s.id === exam.studentId);
+                                if (student) {
+                                  setSelectedStudent(student);
+                                }
+                              }}
+                              className="w-full px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs transition duration-200"
+                            >
+                              Monitor Student
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Live Student Monitoring & Recording Section */}
+        <div className="mt-8">
+          <div className="bg-white rounded-lg shadow-sm border p-6">
+            <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+              <Camera className="h-5 w-5 mr-2 text-purple-600" />
+              Live Student Monitoring & Recording
+            </h2>
+            
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Live Streams */}
+              <div>
+                <h3 className="text-md font-medium text-gray-700 mb-3">Active Live Streams</h3>
+                {Object.keys(liveStreams).length === 0 ? (
+                  <div className="text-center py-8 bg-gray-50 rounded-lg">
+                    <Camera className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+                    <p className="text-gray-500 text-sm">No active live streams</p>
+                    <p className="text-gray-400 text-xs mt-1">Start live viewing students to monitor their exam sessions</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {Object.entries(liveStreams).map(([studentId, stream]) => {
+                      const student = students.find(s => s.id === studentId);
+                      return (
+                        <div key={studentId} className="bg-gray-50 rounded-lg p-4 border">
+                          <div className="flex items-center justify-between mb-3">
+                            <div>
+                              <h4 className="font-medium text-gray-900">{student?.name || 'Unknown Student'}</h4>
+                              <p className="text-sm text-gray-500">{student?.enrollmentNo || 'N/A'}</p>
+                            </div>
+                            <div className="flex space-x-2">
+                              <button
+                                onClick={() => takeSnapshot(studentId)}
+                                className="px-3 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200 transition duration-200"
+                                title="Take snapshot"
+                              >
+                                📸 Snapshot
+                              </button>
+                              <button
+                                onClick={() => stopLiveView(studentId)}
+                                className="px-3 py-1 bg-red-100 text-red-700 rounded text-xs hover:bg-red-200 transition duration-200"
+                                title="Stop live view"
+                              >
+                                Stop
+                              </button>
+                            </div>
+                          </div>
+                          <video
+                            ref={(el) => {
+                              videoRefs.current[studentId] = el;
+                              if (el) {
+                                el.srcObject = stream;
+                              }
+                            }}
+                            autoPlay
+                            muted
+                            className="w-full h-48 object-cover rounded border"
+                            onLoadedMetadata={() => {
+                              if (videoRefs.current[studentId]) {
+                                videoRefs.current[studentId]!.play();
+                              }
+                            }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Live View Controls */}
+              <div>
+                <h3 className="text-md font-medium text-gray-700 mb-3">Start Live Monitoring</h3>
+                <div className="space-y-3">
+                  {students.filter(s => s.isInExam).map((student) => (
+                    <div key={student.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border">
+                      <div>
+                        <h4 className="font-medium text-gray-900">{student.name}</h4>
+                        <p className="text-sm text-gray-500">{student.enrollmentNo}</p>
+                        <p className="text-xs text-purple-600">In Exam</p>
+                      </div>
+                      <div className="flex space-x-2">
+                        {isViewingLive[student.id] ? (
+                          <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs">
+                            Live
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => startLiveView(student.id)}
+                            className="px-3 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200 transition duration-200"
+                          >
+                            Start Live
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {students.filter(s => s.isInExam).length === 0 && (
+                    <div className="text-center py-8 bg-gray-50 rounded-lg">
+                      <Clock className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+                      <p className="text-gray-500 text-sm">No students currently taking exams</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Snapshots Section */}
+        <div className="mt-8">
+          <div className="bg-white rounded-lg shadow-sm border p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-gray-900 flex items-center">
+                📸 Exam Snapshots
+              </h2>
+              <div className="text-sm text-gray-500">
+                {snapshots.length} snapshot{snapshots.length !== 1 ? 's' : ''} captured
+              </div>
+            </div>
+            
+            {snapshots.length === 0 ? (
+              <div className="text-center py-8">
+                <Camera className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+                <p className="text-gray-500 text-sm">No snapshots captured yet</p>
+                <p className="text-gray-400 text-xs mt-1">Take snapshots during live monitoring to capture exam moments</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {snapshots.map((snapshot) => (
+                  <div key={snapshot.id} className="bg-gray-50 rounded-lg p-4 border hover:shadow-md transition-shadow">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <h4 className="font-medium text-gray-900">{snapshot.studentName}</h4>
+                        <p className="text-sm text-gray-500">{snapshot.enrollmentNo}</p>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-xs text-gray-500">
+                          {snapshot.timestamp.toLocaleDateString()}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {snapshot.timestamp.toLocaleTimeString()}
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="mb-3">
+                      <img 
+                        src={snapshot.imageUrl} 
+                        alt={`Snapshot of ${snapshot.studentName}`}
+                        className="w-full h-32 object-cover rounded border"
+                      />
+                    </div>
+                    
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => downloadSnapshot(snapshot.id)}
+                        className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition duration-200 text-sm flex items-center justify-center space-x-2"
+                        title="Download snapshot"
+                      >
+                        <Download className="h-4 w-4" />
+                        <span>Download</span>
+                      </button>
+                      <button
+                        onClick={() => deleteSnapshot(snapshot.id)}
+                        className="px-3 py-2 border border-red-300 text-red-700 rounded-lg hover:bg-red-50 transition duration-200 text-sm"
+                        title="Delete snapshot"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
