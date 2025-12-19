@@ -9,11 +9,15 @@ interface DashboardProps {
 }
 
 const Dashboard: React.FC<DashboardProps> = ({ user, onStartExam, onLogout }) => {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const formattedDate = tomorrow.toISOString().split('T')[0];
+
   const upcomingExams = [
     {
       id: 1,
       subject: 'Applied Mathematics',
-      date: '2025-01-15',
+      date: formattedDate,
       time: '10:00 AM',
       duration: '2 hours',
       status: 'Available'
@@ -21,7 +25,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onStartExam, onLogout }) =>
     {
       id: 2,
       subject: 'Computer Science Engineering',
-      date: '2025-01-15',
+      date: formattedDate,
       time: '2:00 PM',
       duration: '1.5 hours',
       status: 'Available'
@@ -29,7 +33,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onStartExam, onLogout }) =>
     {
       id: 3,
       subject: 'Science & Technology',
-      date: '2025-01-16',
+      date: formattedDate,
       time: '9:00 AM',
       duration: '2 hours',
       status: 'Upcoming'

@@ -1,0 +1,28 @@
+face_detection_service:
+  model:
+    type: "face_detection"
+    confidence_threshold: 0.7
+    input_size: [224, 224]
+  camera:
+    resolution: "1280x720"
+    frame_rate: 30
+  logging:
+    level: "info"
+    file: "face_detection.log"
+  monitoring:
+    enabled: true
+    interval: 5
+  alerts:
+    email_notifications:
+      enabled: true
+      recipients:
+        - "admin@example.com"
+    sms_notifications:
+      enabled: false
+  performance:
+    max_concurrent_sessions: 10
+    timeout: 60
+  security:
+    use_ssl: true
+    ssl_cert_path: "/path/to/cert.pem"
+    ssl_key_path: "/path/to/key.pem"

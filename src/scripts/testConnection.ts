@@ -1,5 +1,6 @@
 import { connectDB, disconnectDB } from '../config/database';
 import { mongoDBService } from '../services/MongoDBService';
+import { pathToFileURL } from 'url';
 
 async function testConnection() {
   try {
@@ -66,7 +67,8 @@ async function testConnection() {
 }
 
 // Run test if this file is executed directly
-if (require.main === module) {
+// Run test if this file is executed directly (ESM compatible)
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   testConnection();
 }
 

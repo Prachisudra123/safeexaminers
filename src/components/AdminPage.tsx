@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Users, Mic, MicOff, Camera, CameraOff, Download, AlertTriangle, Eye, EyeOff, Volume2, VolumeX, Bell, Wifi, WifiOff, Clock, UserCheck, Headphones, X, BookOpen, Trophy, Activity, TrendingUp } from 'lucide-react';
+import { Users, Mic, MicOff, Camera, CameraOff, Download, AlertTriangle, Eye, Volume2, VolumeX, Bell, Wifi, WifiOff, Clock, UserCheck, Headphones, X, BookOpen, Trophy, Activity } from 'lucide-react';
 import { studentMonitoringService, StudentStatus, StudentActivity } from '../services/StudentMonitoringService';
+import { examService } from '../services/ExamService';
 
 interface AdminPageProps {
   onLogout: () => void;
@@ -113,6 +114,8 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
     };
 
     loadExistingRecordings();
+
+
 
     return () => {
       unsubscribeStatus();
@@ -360,15 +363,26 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
       try {
         // Create blob URL if needed
         let blobUrl: string;
+        let fileName: string;
+        
         if (recording.blob instanceof Blob) {
           blobUrl = URL.createObjectURL(recording.blob);
         } else {
           blobUrl = recording.blob; // It's already a string URL
         }
         
+        // Generate filename based on quality
+        const baseFileName = `exam_recording_${recording.studentName || recording.studentId}_${recording.timestamp.toLocaleDateString().replace(/\//g, '-')}_${recording.timestamp.toLocaleTimeString().replace(/:/g, '-')}`;
+        
+        if (quality === 'compressed') {
+          fileName = `${baseFileName}_compressed.webm`;
+        } else {
+          fileName = `${baseFileName}_original.webm`;
+        }
+        
         const link = document.createElement('a');
         link.href = blobUrl;
-        link.download = `exam_recording_${recording.studentName || recording.studentId}_${recording.timestamp.toLocaleDateString().replace(/\//g, '-')}_${recording.timestamp.toLocaleTimeString().replace(/:/g, '-')}.webm`;
+        link.download = fileName;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -378,15 +392,18 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
           URL.revokeObjectURL(blobUrl);
         }
         
-        // Record download activity
+        // Record download activity with quality info
         if (selectedStudent) {
           studentMonitoringService.recordActivity(
             selectedStudent.id,
             'camera_on',
-            `Admin downloaded recording of ${recording.studentName || 'student'}'s exam session`,
+            `Admin downloaded ${quality} quality recording of ${recording.studentName || 'student'}'s exam session`,
             'low'
           );
         }
+        
+        // Show success message with quality info
+        alert(`Recording downloaded successfully as ${quality} quality!`);
       } catch (error) {
         console.error('Error downloading recording:', error);
         alert('Error downloading recording. Please try again.');
@@ -425,6 +442,8 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
       }
     }
   };
+
+
 
   const refreshMonitoringData = () => {
     // Force refresh of student data
@@ -707,6 +726,7 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
                 <Activity className="h-4 w-4" />
                 <span>Refresh</span>
               </button>
+
               <button
                 onClick={disconnectAllStudents}
                 className="bg-yellow-600 hover:bg-yellow-700 text-white px-3 py-2 rounded-lg transition duration-200 flex items-center space-x-2 text-sm"
@@ -781,6 +801,183 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Recently Logged Students */}
+        <div className="mb-6">
+          <div className="bg-white rounded-lg shadow-sm border p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+                <UserCheck className="h-5 w-5 mr-2 text-blue-600" />
+                Recently Logged Students
+              </h3>
+              <div className="text-sm text-gray-500">Showing latest logins</div>
+            </div>
+            {(() => {
+              const recentStudents = [...students]
+                .sort((a, b) => b.loginTime.getTime() - a.loginTime.getTime())
+                .slice(0, 6);
+              if (recentStudents.length === 0) {
+                return (
+                  <div className="text-center py-8">
+                    <Users className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+                    <p className="text-gray-500 text-sm">No recent logins yet</p>
+                    <p className="text-gray-400 text-xs mt-1">Newly logged students will appear here</p>
+                  </div>
+                );
+              }
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {recentStudents.map((student) => {
+                    const isLiveViewing = isViewingLive[student.id];
+                    const progress = examService.getExamProgress(student.id);
+                    return (
+                      <div key={student.id} className="rounded-lg p-4 border bg-white hover:shadow-md transition-shadow">
+                        <div className="flex items-center justify-between mb-2">
+                          <div>
+                            <h4 className="font-medium text-gray-900">{student.name}</h4>
+                            <p className="text-sm text-gray-500">{student.enrollmentNo}</p>
+                            <p className="text-xs text-gray-400">Login: {student.loginTime.toLocaleTimeString()}</p>
+                          </div>
+                          <div className="text-right">
+                            <div className={`text-xs font-medium ${getConnectionQualityColor(student.connectionQuality)}`}>{student.connectionQuality}</div>
+                            {student.isInExam && (
+                              <div className="text-[10px] text-purple-700 font-medium">In Exam</div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Live video preview */}
+                        <div className={`relative mb-3 rounded overflow-hidden border ${isLiveViewing ? 'border-green-300' : 'border-gray-200'}`}>
+                          {isLiveViewing ? (
+                            <video
+                              ref={(el) => {
+                                videoRefs.current[student.id] = el;
+                                if (el && liveStreams[student.id]) {
+                                  el.srcObject = liveStreams[student.id];
+                                }
+                              }}
+                              autoPlay
+                              muted
+                              className="w-full h-40 object-cover"
+                              onLoadedMetadata={() => {
+                                if (videoRefs.current[student.id]) {
+                                  videoRefs.current[student.id]!.play();
+                                }
+                              }}
+                            />
+                          ) : (
+                            <div className="w-full h-40 flex items-center justify-center bg-gray-50 text-gray-400 text-sm">
+                              No live video
+                            </div>
+                          )}
+                          {isLiveViewing && (
+                            <div className="absolute top-2 left-2 bg-red-600 text-white px-2 py-1 rounded text-xs font-medium flex items-center space-x-1">
+                              <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                              <span>LIVE</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Exam progress + restrictions */}
+                        <div className="space-y-2 mb-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-600">Restrictions (warnings)</span>
+                            <span className="text-xs font-semibold text-red-700">{student.warnings}</span>
+                          </div>
+                          {progress ? (
+                            <div>
+                              <div className="flex items-center justify-between text-xs text-gray-600 mb-1">
+                                <span>Answered</span>
+                                <span>{progress.questionsAnswered}/{progress.totalQuestions}</span>
+                              </div>
+                              <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
+                                <div
+                                  className="bg-green-500 h-2"
+                                  style={{ width: `${(progress.questionsAnswered / progress.totalQuestions) * 100}%` }}
+                                />
+                              </div>
+                              <div className="mt-1 flex justify-between text-[10px] text-gray-500">
+                                <span>Attempted: {progress.questionsAttempted}</span>
+                                <span>Skipped: {progress.questionsSkipped}</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-xs text-gray-500">No exam progress yet</div>
+                          )}
+                        </div>
+
+                        {/* Controls */}
+                        <div className="grid grid-cols-3 gap-2">
+                          {!isLiveViewing ? (
+                            <button
+                              onClick={() => startLiveView(student.id)}
+                              className="px-2 py-2 bg-green-600 hover:bg-green-700 text-white rounded text-xs"
+                            >
+                              Start Live
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => stopLiveView(student.id)}
+                              className="px-2 py-2 bg-red-600 hover:bg-red-700 text-white rounded text-xs"
+                            >
+                              Stop Live
+                            </button>
+                          )}
+                          <button
+                            onClick={() => setSelectedStudent(student)}
+                            className="px-2 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs"
+                          >
+                            Details
+                          </button>
+                          <button
+                            onClick={() => sendWarning(student.id)}
+                            className="px-2 py-2 border border-yellow-300 text-yellow-700 rounded text-xs hover:bg-yellow-50"
+                          >
+                            Warn
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+        {/* Real-time Status Bar */}
+        <div className="mb-6 bg-gradient-to-r from-blue-50 to-purple-50 border border-blue-200 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-6">
+              <div className="flex items-center space-x-2">
+                <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+                <span className="text-sm font-medium text-gray-700">
+                  {students.filter(s => s.isOnline).length} Students Online
+                </span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <div className="w-3 h-3 bg-purple-500 rounded-full"></div>
+                <span className="text-sm font-medium text-gray-700">
+                  {students.filter(s => s.isInExam).length} Taking Exams
+                </span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
+                <span className="text-sm font-medium text-gray-700">
+                  {Object.keys(liveStreams).length} Live Monitoring
+                </span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+                <span className="text-sm font-medium text-gray-700">
+                  {recordings.length} Recordings Available
+                </span>
+              </div>
+            </div>
+            <div className="text-xs text-gray-500">
+              Last updated: {new Date().toLocaleTimeString()}
+            </div>
+          </div>
+        </div>
+
         {/* Last Student Appeared Alert */}
         {lastStudentAppeared && (
           <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
@@ -882,13 +1079,18 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
           </div>
         </div>
 
-        {/* Students Currently Taking Exams */}
+        {/* Students Currently Taking Exams - Enhanced Live Monitoring */}
         <div className="mb-6">
           <div className="bg-white rounded-lg shadow-sm border p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-              <Clock className="h-5 w-5 mr-2 text-purple-600" />
-              Students Currently Taking Exams
-            </h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+                <Clock className="h-5 w-5 mr-2 text-purple-600" />
+                Students Currently Taking Exams - Live Monitoring
+              </h3>
+              <div className="text-sm text-purple-600 font-medium">
+                {students.filter(s => s.isInExam).length} Active Exam Sessions
+              </div>
+            </div>
             {(() => {
               const studentsInExam = students.filter(s => s.isInExam);
               if (studentsInExam.length === 0) {
@@ -896,66 +1098,151 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
                   <div className="text-center py-8">
                     <BookOpen className="h-12 w-12 text-gray-400 mx-auto mb-3" />
                     <p className="text-gray-500 text-sm">No students are currently taking exams</p>
+                    <p className="text-gray-400 text-xs mt-1">Students will appear here when they start their exams</p>
                   </div>
                 );
               }
               return (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {studentsInExam.map((student) => {
+                    const progress = examService.getExamProgress(student.id);
                     const examDuration = student.examStartTime 
                       ? Math.floor((Date.now() - student.examStartTime.getTime()) / (1000 * 60))
                       : 0;
+                    const isLiveViewing = isViewingLive[student.id];
+                    
                     return (
-                      <div key={student.id} className="bg-purple-50 rounded-lg p-4 border border-purple-200">
+                      <div key={student.id} className={`rounded-lg p-4 border transition-all duration-200 ${
+                        isLiveViewing 
+                          ? 'bg-green-50 border-green-300 shadow-lg' 
+                          : 'bg-purple-50 border-purple-200 hover:shadow-md'
+                      }`}>
                         <div className="flex items-center justify-between mb-3">
                           <div>
                             <h4 className="font-medium text-gray-900">{student.name}</h4>
                             <p className="text-sm text-gray-500">{student.enrollmentNo}</p>
+                            {isLiveViewing && (
+                              <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 mt-1">
+                                🔴 LIVE MONITORING
+                              </span>
+                            )}
                           </div>
                           <div className="text-right">
                             <div className="text-lg font-bold text-purple-600">{examDuration}m</div>
                             <div className="text-xs text-gray-500">Duration</div>
                           </div>
                         </div>
-                        <div className="space-y-2 text-sm">
-                          <div className="flex justify-between">
-                            <span className="text-gray-600">Status:</span>
-                            <span className="font-medium text-purple-600">In Progress</span>
-                          </div>
-                          <div className="flex justify-between">
+                        
+                        {/* Real-time Status Indicators */}
+                        <div className="space-y-2 text-sm mb-4">
+                          <div className="flex justify-between items-center">
                             <span className="text-gray-600">Camera:</span>
-                            <span className={`font-medium ${student.isCameraOn ? 'text-green-600' : 'text-red-600'}`}>
-                              {student.isCameraOn ? 'Active' : 'Inactive'}
-                            </span>
+                            <div className="flex items-center space-x-2">
+                              <span className={`font-medium ${student.isCameraOn ? 'text-green-600' : 'text-red-600'}`}>
+                                {student.isCameraOn ? 'Active' : 'Inactive'}
+                              </span>
+                              {student.isCameraOn ? (
+                                <Camera className="h-4 w-4 text-green-500" />
+                              ) : (
+                                <CameraOff className="h-4 w-4 text-red-500" />
+                              )}
+                            </div>
                           </div>
-                          <div className="flex justify-between">
+                          <div className="flex justify-between items-center">
                             <span className="text-gray-600">Microphone:</span>
-                            <span className={`font-medium ${student.isMicOn ? 'text-green-600' : 'text-red-600'}`}>
-                              {student.isMicOn ? 'Active' : 'Inactive'}
-                            </span>
+                            <div className="flex items-center space-x-2">
+                              <span className={`font-medium ${student.isMicOn ? 'text-green-600' : 'text-red-600'}`}>
+                                {student.isMicOn ? 'Active' : 'Inactive'}
+                              </span>
+                              {student.isMicOn ? (
+                                <Mic className="h-4 w-4 text-green-500" />
+                              ) : (
+                                <MicOff className="h-4 w-4 text-red-500" />
+                              )}
+                            </div>
                           </div>
-                          <div className="flex justify-between">
+                          <div className="flex justify-between items-center">
                             <span className="text-gray-600">Connection:</span>
-                            <span className={`font-medium ${getConnectionQualityColor(student.connectionQuality)}`}>
-                              {student.connectionQuality}
+                            <div className="flex items-center space-x-2">
+                              <span className={`font-medium ${getConnectionQualityColor(student.connectionQuality)}`}>
+                                {student.connectionQuality}
+                              </span>
+                              {getConnectionQualityIcon(student.connectionQuality)}
+                            </div>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className="text-gray-600">Current Tab:</span>
+                            <span className="font-medium text-blue-600 text-xs max-w-24 truncate">
+                              {student.currentTab}
                             </span>
                           </div>
                         </div>
-                        <div className="mt-3 pt-3 border-t border-purple-200">
-                          <div className="flex space-x-2">
+
+                          {/* Exam Progress Summary */}
+                          {progress && (
+                            <div className="mb-4 bg-white/70 rounded-lg p-3 border border-purple-200">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-medium text-purple-700">Exam Progress</span>
+                                <span className="text-xs text-gray-600">
+                                  {progress.questionsAnswered}/{progress.totalQuestions} answered
+                                </span>
+                              </div>
+                              <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
+                                <div
+                                  className="bg-green-500 h-2"
+                                  style={{ width: `${(progress.questionsAnswered / progress.totalQuestions) * 100}%` }}
+                                />
+                              </div>
+                              <div className="mt-2 flex justify-between text-[10px] text-gray-600">
+                                <span>Attempted: {progress.questionsAttempted}</span>
+                                <span>Skipped: {progress.questionsSkipped}</span>
+                              </div>
+                            </div>
+                          )}
+                        
+                        {/* Live Monitoring Controls */}
+                        <div className="space-y-2 mb-4">
+                          {!isLiveViewing ? (
                             <button
-                              onClick={() => setSelectedStudent(student)}
-                              className="flex-1 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded-lg transition duration-200 text-sm"
+                              onClick={() => startLiveView(student.id)}
+                              className="w-full bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg transition duration-200 text-sm flex items-center justify-center space-x-2"
                             >
-                              Monitor
+                              <Camera className="h-4 w-4" />
+                              <span>Start Live Monitoring</span>
                             </button>
-                            <button
-                              onClick={() => sendWarning(student.id)}
-                              className="px-3 py-2 border border-yellow-300 text-yellow-700 rounded-lg hover:bg-yellow-50 transition duration-200 text-sm"
-                            >
-                              Warn
-                            </button>
-                          </div>
+                          ) : (
+                            <div className="space-y-2">
+                              <button
+                                onClick={() => takeSnapshot(student.id)}
+                                className="w-full bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition duration-200 text-sm flex items-center justify-center space-x-2"
+                              >
+                                📸 Take Snapshot
+                              </button>
+                              <button
+                                onClick={() => stopLiveView(student.id)}
+                                className="w-full bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-lg transition duration-200 text-sm flex items-center justify-center space-x-2"
+                              >
+                                <X className="h-4 w-4" />
+                                <span>Stop Live Monitoring</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Action Buttons */}
+                        <div className="flex space-x-2">
+                          <button
+                            onClick={() => setSelectedStudent(student)}
+                            className="flex-1 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded-lg transition duration-200 text-sm"
+                          >
+                            Detailed View
+                          </button>
+                          <button
+                            onClick={() => sendWarning(student.id)}
+                            className="px-3 py-2 border border-yellow-300 text-yellow-700 rounded-lg hover:bg-yellow-50 transition duration-200 text-sm"
+                          >
+                            Warn
+                          </button>
                         </div>
                       </div>
                     );
@@ -1385,6 +1672,25 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
                     <p className="text-lg font-semibold text-purple-900 mt-1">
                       Exam Duration: {Math.floor((Date.now() - (selectedStudent.examStartTime?.getTime() || Date.now())) / (1000 * 60))} minutes
                     </p>
+                    {(() => {
+                      const progress = examService.getExamProgress(selectedStudent.id);
+                      if (!progress) return null;
+                      return (
+                        <div className="mt-3">
+                          <div className="flex items-center justify-between text-xs text-purple-800 mb-1">
+                            <span>Answered: {progress.questionsAnswered}</span>
+                            <span>Attempted: {progress.questionsAttempted}</span>
+                            <span>Skipped: {progress.questionsSkipped}</span>
+                          </div>
+                          <div className="w-full bg-purple-100 h-2 rounded-full overflow-hidden">
+                            <div
+                              className="bg-purple-600 h-2"
+                              style={{ width: `${(progress.questionsAnswered / progress.totalQuestions) * 100}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
 
@@ -1770,18 +2076,35 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
           </div>
         </div>
 
-        {/* Live Student Monitoring & Recording Section */}
+        {/* Enhanced Live Student Monitoring & Recording Section */}
         <div className="mt-8">
           <div className="bg-white rounded-lg shadow-sm border p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-              <Camera className="h-5 w-5 mr-2 text-purple-600" />
-              Live Student Monitoring & Recording
-            </h2>
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-lg font-semibold text-gray-900 flex items-center">
+                <Camera className="h-5 w-5 mr-2 text-purple-600" />
+                Live Student Monitoring & Recording
+              </h2>
+              <div className="flex items-center space-x-3">
+                <div className="text-sm text-gray-500">
+                  {Object.keys(liveStreams).length} active live stream{Object.keys(liveStreams).length !== 1 ? 's' : ''}
+                </div>
+                <div className="text-sm text-gray-500">
+                  {recordings.length} recording{recordings.length !== 1 ? 's' : ''} available
+                </div>
+              </div>
+            </div>
             
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Live Streams */}
+              {/* Live Streams with Enhanced Controls */}
               <div>
-                <h3 className="text-md font-medium text-gray-700 mb-3">Active Live Streams</h3>
+                <h3 className="text-md font-medium text-gray-700 mb-3 flex items-center justify-between">
+                  <span>Active Live Streams</span>
+                  {Object.keys(liveStreams).length > 0 && (
+                    <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">
+                      🔴 LIVE
+                    </span>
+                  )}
+                </h3>
                 {Object.keys(liveStreams).length === 0 ? (
                   <div className="text-center py-8 bg-gray-50 rounded-lg">
                     <Camera className="h-12 w-12 text-gray-400 mx-auto mb-3" />
@@ -1792,20 +2115,34 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
                   <div className="space-y-4">
                     {Object.entries(liveStreams).map(([studentId, stream]) => {
                       const student = students.find(s => s.id === studentId);
+                      const examDuration = student?.examStartTime 
+                        ? Math.floor((Date.now() - student.examStartTime.getTime()) / (1000 * 60))
+                        : 0;
+                      
                       return (
-                        <div key={studentId} className="bg-gray-50 rounded-lg p-4 border">
+                        <div key={studentId} className="bg-green-50 rounded-lg p-4 border border-green-200 shadow-lg">
                           <div className="flex items-center justify-between mb-3">
                             <div>
                               <h4 className="font-medium text-gray-900">{student?.name || 'Unknown Student'}</h4>
                               <p className="text-sm text-gray-500">{student?.enrollmentNo || 'N/A'}</p>
+                              <p className="text-xs text-green-600 font-medium">Exam Duration: {examDuration}m</p>
                             </div>
                             <div className="flex space-x-2">
                               <button
                                 onClick={() => takeSnapshot(studentId)}
-                                className="px-3 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200 transition duration-200"
+                                className="px-3 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200 transition duration-200 flex items-center space-x-1"
                                 title="Take snapshot"
                               >
-                                📸 Snapshot
+                                <span>📸</span>
+                                <span>Snapshot</span>
+                              </button>
+                              <button
+                                onClick={() => startRecording()}
+                                className="px-3 py-1 bg-red-100 text-red-700 rounded text-xs hover:bg-red-200 transition duration-200 flex items-center space-x-1"
+                                title="Start recording"
+                              >
+                                <span>🔴</span>
+                                <span>Record</span>
                               </button>
                               <button
                                 onClick={() => stopLiveView(studentId)}
@@ -1816,22 +2153,61 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
                               </button>
                             </div>
                           </div>
-                          <video
-                            ref={(el) => {
-                              videoRefs.current[studentId] = el;
-                              if (el) {
-                                el.srcObject = stream;
-                              }
-                            }}
-                            autoPlay
-                            muted
-                            className="w-full h-48 object-cover rounded border"
-                            onLoadedMetadata={() => {
-                              if (videoRefs.current[studentId]) {
-                                videoRefs.current[studentId]!.play();
-                              }
-                            }}
-                          />
+                          
+                          {/* Live Video Stream */}
+                          <div className="relative mb-3">
+                            <video
+                              ref={(el) => {
+                                videoRefs.current[studentId] = el;
+                                if (el) {
+                                  el.srcObject = stream;
+                                }
+                              }}
+                              autoPlay
+                              muted
+                              className="w-full h-48 object-cover rounded border"
+                              onLoadedMetadata={() => {
+                                if (videoRefs.current[studentId]) {
+                                  videoRefs.current[studentId]!.play();
+                                }
+                              }}
+                            />
+                            {/* Live Indicator Overlay */}
+                            <div className="absolute top-2 left-2 bg-red-600 text-white px-2 py-1 rounded text-xs font-medium flex items-center space-x-1">
+                              <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                              <span>LIVE</span>
+                            </div>
+                            
+                            {/* Recording Status Overlay */}
+                            {isRecording && selectedStudent?.id === studentId && (
+                              <div className="absolute top-2 right-2 bg-red-600 text-white px-2 py-1 rounded text-xs font-medium flex items-center space-x-1">
+                                <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                                <span>REC</span>
+                              </div>
+                            )}
+                          </div>
+                          
+                          {/* Real-time Status */}
+                          <div className="grid grid-cols-3 gap-2 text-xs">
+                            <div className="text-center">
+                              <div className={`w-3 h-3 rounded-full mx-auto mb-1 ${
+                                student?.isCameraOn ? 'bg-green-500' : 'bg-red-500'
+                              }`}></div>
+                              <span className="text-gray-600">Camera</span>
+                            </div>
+                            <div className="text-center">
+                              <div className={`w-3 h-3 rounded-full mx-auto mb-1 ${
+                                student?.isMicOn ? 'bg-green-500' : 'bg-red-500'
+                              }`}></div>
+                              <span className="text-gray-600">Mic</span>
+                            </div>
+                            <div className="text-center">
+                              <div className={`w-3 h-3 rounded-full mx-auto mb-1 ${
+                                student?.isTabActive ? 'bg-green-500' : 'bg-red-500'
+                              }`}></div>
+                              <span className="text-gray-600">Tab</span>
+                            </div>
+                          </div>
                         </div>
                       );
                     })}
@@ -1839,39 +2215,85 @@ const AdminPage: React.FC<AdminPageProps> = ({ onLogout }) => {
                 )}
               </div>
 
-              {/* Live View Controls */}
+              {/* Live Monitoring Controls & Quick Actions */}
               <div>
-                <h3 className="text-md font-medium text-gray-700 mb-3">Start Live Monitoring</h3>
-                <div className="space-y-3">
-                  {students.filter(s => s.isInExam).map((student) => (
-                    <div key={student.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border">
-                      <div>
-                        <h4 className="font-medium text-gray-900">{student.name}</h4>
-                        <p className="text-sm text-gray-500">{student.enrollmentNo}</p>
-                        <p className="text-xs text-purple-600">In Exam</p>
-                      </div>
-                      <div className="flex space-x-2">
-                        {isViewingLive[student.id] ? (
-                          <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs">
-                            Live
-                          </span>
-                        ) : (
-                          <button
-                            onClick={() => startLiveView(student.id)}
-                            className="px-3 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200 transition duration-200"
-                          >
-                            Start Live
-                          </button>
-                        )}
-                      </div>
+                <h3 className="text-md font-medium text-gray-700 mb-3">Quick Actions & Monitoring</h3>
+                <div className="space-y-4">
+                  {/* Students Available for Live Monitoring */}
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-600 mb-2">Students in Exam</h4>
+                    <div className="space-y-2">
+                      {students.filter(s => s.isInExam).map((student) => (
+                        <div key={student.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border hover:bg-gray-100 transition-colors">
+                          <div className="flex-1">
+                            <h5 className="font-medium text-gray-900 text-sm">{student.name}</h5>
+                            <p className="text-xs text-gray-500">{student.enrollmentNo}</p>
+                            <div className="flex items-center space-x-2 mt-1">
+                              <span className={`w-2 h-2 rounded-full ${
+                                student.isCameraOn ? 'bg-green-500' : 'bg-red-500'
+                              }`}></span>
+                              <span className="text-xs text-gray-600">
+                                {student.isCameraOn ? 'Camera Active' : 'Camera Inactive'}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="flex space-x-2">
+                            {isViewingLive[student.id] ? (
+                              <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-medium">
+                                🔴 Live
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => startLiveView(student.id)}
+                                className="px-3 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200 transition duration-200"
+                              >
+                                Start Live
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                      {students.filter(s => s.isInExam).length === 0 && (
+                        <div className="text-center py-6 bg-gray-50 rounded-lg">
+                          <Clock className="h-8 w-8 text-gray-400 mx-auto mb-2" />
+                          <p className="text-gray-500 text-xs">No students currently taking exams</p>
+                        </div>
+                      )}
                     </div>
-                  ))}
-                  {students.filter(s => s.isInExam).length === 0 && (
-                    <div className="text-center py-8 bg-gray-50 rounded-lg">
-                      <Clock className="h-12 w-12 text-gray-400 mx-auto mb-3" />
-                      <p className="text-gray-500 text-sm">No students currently taking exams</p>
+                  </div>
+                  
+                  {/* Quick Recording Actions */}
+                  <div className="bg-blue-50 rounded-lg p-3 border border-blue-200">
+                    <h4 className="text-sm font-medium text-blue-800 mb-2">Quick Recording</h4>
+                    <div className="space-y-2">
+                      {selectedStudent ? (
+                        <div className="text-sm">
+                          <p className="text-blue-700">Selected: <strong>{selectedStudent.name}</strong></p>
+                          <div className="flex space-x-2 mt-2">
+                            {!isRecording ? (
+                              <button
+                                onClick={startRecording}
+                                className="bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded text-xs transition duration-200 flex items-center space-x-1"
+                              >
+                                <span>🔴</span>
+                                <span>Start Recording</span>
+                              </button>
+                            ) : (
+                              <button
+                                onClick={stopRecording}
+                                className="bg-gray-600 hover:bg-gray-700 text-white px-3 py-2 rounded text-xs transition duration-200 flex items-center space-x-1"
+                              >
+                                <span>⏹️</span>
+                                <span>Stop Recording</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-blue-600 text-xs">Select a student to start recording</p>
+                      )}
                     </div>
-                  )}
+                  </div>
                 </div>
               </div>
             </div>

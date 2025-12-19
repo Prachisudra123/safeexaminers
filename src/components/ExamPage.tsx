@@ -1,9 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import { LogOut, Camera, Mic, ChevronLeft, ChevronRight, Flag, SkipForward, Save } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { LogOut, ChevronLeft, ChevronRight, Flag, SkipForward, Save, AlertTriangle, Eye, Volume2 } from 'lucide-react';
 import { User } from '../App';
 import { questions } from '../data/questions';
 import { examService } from '../services/ExamService';
 import CameraFeed from './CameraFeed';
+import { studentMonitoringService } from '../services/StudentMonitoringService';
+import { connectDB, disconnectDB } from '../config/database';
+import { mongoDBService } from '../services/MongoDBService';
+import { Student, Exam, StudentActivity, Recording } from '../models';
 
 interface ExamPageProps {
   user: User;
@@ -18,11 +22,234 @@ const ExamPage: React.FC<ExamPageProps> = ({ user, onSubmitExam, onLogout }) => 
   const [answers, setAnswers] = useState<{ [key: number]: string }>({});
   const [questionStatuses, setQuestionStatuses] = useState<{ [key: number]: QuestionStatus }>({});
   const [timeRemaining, setTimeRemaining] = useState(3 * 60 * 60); // 3 hours in seconds
-  const [showCamera, setShowCamera] = useState(true);
+  const [showCamera] = useState(true);
   const [examStartTime] = useState(Date.now());
   const [isSaving, setIsSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  
+  // Monitoring state
+  const [warnings, setWarnings] = useState<Array<{
+    id: string;
+    type: 'tab_switch' | 'face_not_detected' | 'voice_detected';
+    message: string;
+    timestamp: Date;
+    severity: 'low' | 'medium' | 'high';
+  }>>([]);
+  const [isTabActive, setIsTabActive] = useState(true);
+  const [faceDetected, setFaceDetected] = useState(true);
+  const [voiceDetected, setVoiceDetected] = useState(false);
+  
+  // Refs for monitoring
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const microphoneRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const faceDetectedRef = useRef(true);
+  const voiceMonitorCleanupRef = useRef<(() => void) | null>(null);
 
+  // Tab visibility monitoring
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      const isVisible = !document.hidden;
+      setIsTabActive(isVisible);
+      
+      if (!isVisible && user.studentId) {
+        // Student switched to another tab
+        const warning = {
+          id: `tab_${Date.now()}`,
+          type: 'tab_switch' as const,
+          message: 'Student switched to another tab during exam',
+          timestamp: new Date(),
+          severity: 'high' as const
+        };
+        
+        setWarnings(prev => [...prev, warning]);
+        
+        // Report to monitoring service
+        studentMonitoringService.recordActivity(
+          user.studentId,
+          'tab_switch',
+          'Student switched to another tab during exam',
+          'high'
+        );
+        
+        // Send warning to admin
+        studentMonitoringService.sendWarning(user.studentId);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [user.studentId]);
+
+  // Face detection monitoring
+  useEffect(() => {
+    if (!showCamera) return;
+
+    const checkFaceDetection = () => {
+      if (!videoRef.current || !canvasRef.current) return;
+
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      const context = canvas.getContext('2d');
+      
+      if (!context || video.readyState < 2) return;
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      context.drawImage(video, 0, 0);
+
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+      
+      let skinPixels = 0;
+      const totalPixels = data.length / 4;
+      
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        
+        if (r > 95 && g > 40 && b > 20 && 
+            Math.max(r, g, b) - Math.min(r, g, b) > 15 &&
+            Math.abs(r - g) > 15 && r > g && r > b) {
+          skinPixels++;
+        }
+      }
+      
+      const skinPercentage = (skinPixels / totalPixels) * 100;
+      const faceDetectedNow = skinPercentage > 5;
+      
+      if (!faceDetectedNow && faceDetectedRef.current && user.studentId) {
+        const warning = {
+          id: `face_${Date.now()}`,
+          type: 'face_not_detected' as const,
+          message: 'Face not detected in camera view',
+          timestamp: new Date(),
+          severity: 'high' as const
+        };
+        
+        setWarnings(prev => [...prev, warning]);
+        
+        studentMonitoringService.recordActivity(
+          user.studentId,
+          'camera_off',
+          'Face not detected in camera view during exam',
+          'medium'
+        );
+        studentMonitoringService.sendWarning(user.studentId);
+        studentMonitoringService.updateStudentStatus(user.studentId, { isCameraOn: false });
+      } else if (faceDetectedNow && !faceDetectedRef.current && user.studentId) {
+        studentMonitoringService.updateStudentStatus(user.studentId, { isCameraOn: true });
+        studentMonitoringService.recordActivity(
+          user.studentId,
+          'camera_on',
+          'Face detected again in camera view',
+          'low'
+        );
+      }
+      
+      faceDetectedRef.current = faceDetectedNow;
+      setFaceDetected(faceDetectedNow);
+    };
+
+    const faceCheckInterval = setInterval(checkFaceDetection, 2000);
+    
+    return () => {
+      clearInterval(faceCheckInterval);
+    };
+  }, [showCamera, user.studentId]);
+
+  // Voice detection monitoring
+  useEffect(() => {
+    if (!showCamera || !user.studentId) return;
+
+    let stopVoiceMonitoring: (() => void) | null = null;
+
+    const startVoiceMonitoring = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioStreamRef.current = stream;
+        studentMonitoringService.updateStudentStatus(user.studentId!, { isMicOn: true });
+        
+        audioContextRef.current = new AudioContext();
+        analyserRef.current = audioContextRef.current.createAnalyser();
+        microphoneRef.current = audioContextRef.current.createMediaStreamSource(stream);
+        
+        analyserRef.current.fftSize = 256;
+        microphoneRef.current.connect(analyserRef.current);
+        
+        const bufferLength = analyserRef.current.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        
+        const checkVoice = () => {
+          if (!analyserRef.current) return;
+          
+          analyserRef.current.getByteFrequencyData(dataArray);
+          const average = dataArray.reduce((a, b) => a + b) / bufferLength;
+          
+          const voiceDetectedNow = average > 30;
+          
+          if (voiceDetectedNow && !voiceDetected && user.studentId) {
+            const warning = {
+              id: `voice_${Date.now()}`,
+              type: 'voice_detected' as const,
+              message: 'Voice/sound detected during exam',
+              timestamp: new Date(),
+              severity: 'medium' as const
+            };
+            
+            setWarnings(prev => [...prev, warning]);
+            
+            studentMonitoringService.recordActivity(
+              user.studentId,
+              'speaking',
+              'Voice/sound detected during exam',
+              'medium'
+            );
+            studentMonitoringService.sendWarning(user.studentId);
+          }
+          
+          setVoiceDetected(voiceDetectedNow);
+        };
+        
+        const voiceCheckInterval = setInterval(checkVoice, 1000);
+        
+        stopVoiceMonitoring = () => {
+          clearInterval(voiceCheckInterval);
+          if (audioStreamRef.current) {
+            audioStreamRef.current.getTracks().forEach(track => track.stop());
+          }
+          studentMonitoringService.updateStudentStatus(user.studentId!, { isMicOn: false, isSpeaking: false });
+        };
+      } catch (error) {
+        console.error('Error starting voice monitoring:', error);
+      }
+    };
+
+    startVoiceMonitoring();
+
+    voiceMonitorCleanupRef.current = () => {
+      if (stopVoiceMonitoring) {
+        stopVoiceMonitoring();
+      }
+    };
+
+    return () => {
+      if (voiceMonitorCleanupRef.current) {
+        voiceMonitorCleanupRef.current();
+        voiceMonitorCleanupRef.current = null;
+      }
+    };
+  }, [showCamera, user.studentId]);
+
+  // Timer effect
   useEffect(() => {
     const timer = setInterval(() => {
       setTimeRemaining((prev) => {
@@ -154,10 +381,51 @@ const ExamPage: React.FC<ExamPageProps> = ({ user, onSubmitExam, onLogout }) => 
     return Object.values(questionStatuses).filter(status => status === 'skipped').length;
   };
 
+  const clearWarnings = () => {
+    setWarnings([]);
+  };
+
+  const dismissWarning = (warningId: string) => {
+    setWarnings(prev => prev.filter(w => w.id !== warningId));
+  };
+
+  const handleCameraReady = (_stream: MediaStream | null, videoEl: HTMLVideoElement | null) => {
+    if (videoEl) {
+      videoRef.current = videoEl;
+    }
+    setCameraError(null);
+    if (user.studentId) {
+      studentMonitoringService.updateStudentStatus(user.studentId, { isCameraOn: true, isOnline: true });
+      studentMonitoringService.recordActivity(
+        user.studentId,
+        'camera_on',
+        'Camera stream started for exam monitoring',
+        'low'
+      );
+    }
+  };
+
+  const handleCameraError = (message: string) => {
+    setCameraError(message);
+    if (user.studentId) {
+      studentMonitoringService.updateStudentStatus(user.studentId, { isCameraOn: false });
+      studentMonitoringService.recordActivity(
+        user.studentId,
+        'camera_off',
+        message,
+        'high'
+      );
+      studentMonitoringService.sendWarning(user.studentId);
+    }
+  };
+
   const question = questions[currentQuestion];
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* Hidden monitoring elements */}
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
+      <video ref={videoRef} style={{ display: 'none' }} />
       {/* Header */}
       <header className="bg-white shadow-sm border-b sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -169,14 +437,28 @@ const ExamPage: React.FC<ExamPageProps> = ({ user, onSubmitExam, onLogout }) => 
               </div>
             </div>
             <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-2">
-                <Camera className="h-4 w-4 text-green-600" />
-                <span className="text-sm text-green-600">Camera On</span>
+              {/* Monitoring Status Indicators */}
+              <div className="flex items-center space-x-3">
+                <div className={`flex items-center space-x-1 px-2 py-1 rounded text-xs ${
+                  isTabActive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                }`}>
+                  <div className={`w-2 h-2 rounded-full ${isTabActive ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                  <span>{isTabActive ? 'Tab Active' : 'Tab Inactive'}</span>
+                </div>
+                <div className={`flex items-center space-x-1 px-2 py-1 rounded text-xs ${
+                  faceDetected ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                }`}>
+                  <Eye className="w-3 h-3" />
+                  <span>{faceDetected ? 'Face Detected' : 'No Face'}</span>
+                </div>
+                <div className={`flex items-center space-x-1 px-2 py-1 rounded text-xs ${
+                  voiceDetected ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+                }`}>
+                  <Volume2 className="w-3 h-3" />
+                  <span>{voiceDetected ? 'Voice Detected' : 'Silent'}</span>
+                </div>
               </div>
-              <div className="flex items-center space-x-2">
-                <Mic className="h-4 w-4 text-green-600" />
-                <span className="text-sm text-green-600">Mic On</span>
-              </div>
+              
               <div className="text-lg font-mono font-bold text-red-600">
                 {formatTime(timeRemaining)}
               </div>
@@ -193,6 +475,60 @@ const ExamPage: React.FC<ExamPageProps> = ({ user, onSubmitExam, onLogout }) => 
       </header>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Warnings Display */}
+        {warnings.length > 0 && (
+          <div className="mb-6">
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center space-x-3">
+                  <AlertTriangle className="h-6 w-6 text-red-600" />
+                  <h3 className="text-lg font-medium text-red-800">
+                    Exam Monitoring Warnings ({warnings.length})
+                  </h3>
+                </div>
+                <button
+                  onClick={clearWarnings}
+                  className="px-3 py-1 bg-red-100 text-red-700 rounded text-sm hover:bg-red-200 transition duration-200"
+                >
+                  Clear All
+                </button>
+              </div>
+              <div className="space-y-2 max-h-32 overflow-y-auto">
+                {warnings.slice(-5).reverse().map((warning) => (
+                  <div key={warning.id} className={`flex items-center justify-between p-2 rounded text-sm ${
+                    warning.severity === 'high' ? 'bg-red-100 text-red-800' :
+                    warning.severity === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                    'bg-blue-100 text-blue-800'
+                  }`}>
+                    <div className="flex items-center space-x-2">
+                      <span className="font-medium">
+                        {warning.type === 'tab_switch' ? '🚫 Tab Switch' :
+                         warning.type === 'face_not_detected' ? '👤 No Face' :
+                         '🔊 Voice Detected'}
+                      </span>
+                      <span>{warning.message}</span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <span className="text-xs opacity-75">
+                        {warning.timestamp.toLocaleTimeString()}
+                      </span>
+                      <button
+                        onClick={() => dismissWarning(warning.id)}
+                        className="text-xs px-2 py-1 bg-white bg-opacity-50 rounded hover:bg-opacity-75 transition duration-200"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 text-xs text-red-600">
+                ⚠️ These warnings are automatically sent to the exam administrator
+              </div>
+            </div>
+          </div>
+        )}
+        
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           {/* Question Panel */}
           <div className="lg:col-span-3">
@@ -375,7 +711,14 @@ const ExamPage: React.FC<ExamPageProps> = ({ user, onSubmitExam, onLogout }) => 
             {showCamera && (
               <div className="bg-white rounded-xl shadow-lg p-4">
                 <h3 className="text-sm font-medium text-gray-900 mb-3">Camera Monitoring</h3>
-                <CameraFeed />
+                <CameraFeed 
+                  onVideoRef={(video) => handleCameraReady(null, video)}
+                  onStreamReady={(stream) => handleCameraReady(stream, videoRef.current)}
+                  onCameraError={handleCameraError}
+                />
+                {cameraError && (
+                  <p className="mt-2 text-xs text-red-600">{cameraError}</p>
+                )}
               </div>
             )}
 

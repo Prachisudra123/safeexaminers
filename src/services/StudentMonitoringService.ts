@@ -64,24 +64,15 @@ class StudentMonitoringService {
   private analyser: AnalyserNode | null = null;
   private microphone: MediaStreamAudioSourceNode | null = null;
   private audioStream: MediaStream | null = null;
+  private activities: StudentActivity[] = [];
 
   constructor() {
     this.startMonitoring();
   }
 
   public startMonitoring() {
-    // Monitor tab visibility changes
-    this.tabVisibilityHandler = () => {
-      const isVisible = !document.hidden;
-      this.updateTabActivity(isVisible);
-    };
-    document.addEventListener('visibilitychange', this.tabVisibilityHandler);
-
-    // Start periodic monitoring
-    this.monitoringInterval = setInterval(() => {
-      this.simulateStudentActivities();
-      this.notifyStatusUpdate();
-    }, 3000);
+    // Ensure initial subscribers get the current empty state
+    this.notifyStatusUpdate();
   }
 
   public stopMonitoring() {
@@ -94,60 +85,8 @@ class StudentMonitoringService {
     this.stopAudioMonitoring();
   }
 
-  private updateTabActivity(isVisible: boolean) {
-    // Simulate tab switching for demo purposes
-    if (!isVisible) {
-      this.recordActivity('1', 'tab_switch', 'Student switched to another tab', 'medium');
-    }
-  }
-
-  private simulateStudentActivities() {
-    this.students.forEach((student, studentId) => {
-      // Only simulate activities for students who are online
-      if (!student.isOnline) return;
-
-      const random = Math.random();
-      
-      if (random > 0.95) {
-        // 5% chance of camera turning off
-        if (student.isCameraOn) {
-          student.isCameraOn = false;
-          this.recordActivity(studentId, 'camera_off', 'Camera turned off', 'high');
-        }
-      } else if (random > 0.9) {
-        // 5% chance of camera turning on
-        if (!student.isCameraOn && student.isOnline) {
-          student.isCameraOn = true;
-          this.recordActivity(studentId, 'camera_on', 'Camera turned on', 'low');
-        }
-      }
-
-      if (random > 0.85) {
-        // 15% chance of speaking
-        student.isSpeaking = !student.isSpeaking;
-        this.recordActivity(
-          studentId, 
-          student.isSpeaking ? 'speaking' : 'silent',
-          student.isSpeaking ? 'Student started speaking' : 'Student stopped speaking',
-          'low'
-        );
-      }
-
-      if (random > 0.8) {
-        // 20% chance of tab switching
-        student.isTabActive = !student.isTabActive;
-        if (!student.isTabActive) {
-          this.recordActivity(studentId, 'tab_switch', 'Student switched to another tab', 'medium');
-        }
-      }
-
-      // Update last activity
-      student.lastActivity = new Date();
-    });
-  }
-
   // Add new student when they login
-  public addStudent(enrollmentNo: string, name: string, password: string): string {
+  public addStudent(enrollmentNo: string, name: string, _password: string): string {
     const studentId = `student_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     const newStudent: StudentStatus = {
@@ -355,6 +294,12 @@ class StudentMonitoringService {
       metadata
     };
 
+    // Keep an in-memory activity log for admin review
+    this.activities.unshift(activity);
+    if (this.activities.length > 200) {
+      this.activities.pop();
+    }
+
     // Update student status
     const student = this.students.get(studentId);
     if (student) {
@@ -374,7 +319,11 @@ class StudentMonitoringService {
   }
 
   public getAllStudentStatuses(): StudentStatus[] {
-    return Array.from(this.students.values());
+    return Array.from(this.students.values()).sort((a, b) => {
+      const aTime = a.loginTime ? new Date(a.loginTime).getTime() : 0;
+      const bTime = b.loginTime ? new Date(b.loginTime).getTime() : 0;
+      return aTime - bTime;
+    });
   }
 
   public updateStudentStatus(studentId: string, updates: Partial<StudentStatus>) {
@@ -483,9 +432,9 @@ class StudentMonitoringService {
 
   // Get recent activities for a specific student
   public getStudentRecentActivities(studentId: string, limit: number = 10): StudentActivity[] {
-    // This would be implemented to return recent activities for a specific student
-    // For now, we'll return all activities and filter in the component
-    return [];
+    return this.activities
+      .filter(activity => activity.studentId === studentId)
+      .slice(0, limit);
   }
 }
 

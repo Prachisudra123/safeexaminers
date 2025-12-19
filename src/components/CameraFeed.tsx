@@ -1,8 +1,14 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { Camera, AlertTriangle } from 'lucide-react';
 
-const CameraFeed: React.FC = () => {
-  const videoRef = useRef<HTMLVideoElement>(null);
+interface CameraFeedProps {
+  onVideoRef?: (video: HTMLVideoElement | null) => void;
+  onStreamReady?: (stream: MediaStream) => void;
+  onCameraError?: (message: string) => void;
+}
+
+const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoRef, onStreamReady, onCameraError }) => {
+  const internalVideoRef = useRef<HTMLVideoElement>(null);
   const [faceDetected, setFaceDetected] = useState(true);
   const [isActive, setIsActive] = useState(false);
   const [error, setError] = useState<string>('');
@@ -20,16 +26,29 @@ const CameraFeed: React.FC = () => {
           audio: false
         });
 
-        if (videoRef.current) {
-          videoRef.current.srcObject = mediaStream;
+        if (internalVideoRef.current) {
+          internalVideoRef.current.srcObject = mediaStream;
           setStream(mediaStream);
           setIsActive(true);
           setError('');
+          setFaceDetected(true);
+          
+          // Notify parent component about video ref
+          if (onVideoRef) {
+            onVideoRef(internalVideoRef.current);
+          }
+          if (onStreamReady) {
+            onStreamReady(mediaStream);
+          }
         }
       } catch (err) {
         console.error('Error accessing camera:', err);
         setError('Camera access denied. Please allow camera permissions for exam monitoring.');
         setIsActive(false);
+        setFaceDetected(false);
+        if (onCameraError) {
+          onCameraError('Camera access denied. Please allow camera permissions for exam monitoring.');
+        }
       }
     };
 
@@ -74,7 +93,7 @@ const CameraFeed: React.FC = () => {
     <div className="relative">
       <div className="w-full h-32 bg-gray-900 rounded-lg overflow-hidden relative">
         <video
-          ref={videoRef}
+          ref={internalVideoRef}
           autoPlay
           playsInline
           muted

@@ -1,0 +1,7 @@
+numpy  
+opencv-python  
+face-recognition  
+dlib  
+Pillow  
+scikit-learn  
+requests  

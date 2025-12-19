@@ -1,0 +1,9 @@
+mic_detection_service:
+  sample_rate: 44100
+  channels: 1
+  chunk_size: 1024
+  detection_threshold: 0.5
+  log_file: "mic_detection.log"
+  monitoring_interval: 5
+  alert_on_violation: true
+  violation_log_file: "violations.log"

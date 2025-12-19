@@ -1,6 +1,7 @@
 import { connectDB, disconnectDB } from '../config/database';
 import { mongoDBService } from '../services/MongoDBService';
 import { Student, Exam, StudentActivity, Recording } from '../models';
+import { pathToFileURL } from 'url';
 
 async function initializeDatabase() {
   try {
@@ -133,7 +134,8 @@ async function initializeDatabase() {
 }
 
 // Run initialization if this file is executed directly
-if (require.main === module) {
+// Run initialization if this file is executed directly (ESM compatible)
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   initializeDatabase();
 }
 
